@@ -17,12 +17,12 @@ Browser → Worker (swr-shell-demo) → Cloudflare CDN cache → R2 bucket
 3. The CDN serves the R2 object from cache and returns it in milliseconds. The Worker renders the response headers and body into an HTML debug page so you can observe cache behavior live.
 4. The R2 object is uploaded with:
    ```
-   Cache-Control: public, max-age=0, s-maxage=60, stale-while-revalidate=3600
+   Cache-Control: public, max-age=0, s-maxage=30, stale-while-revalidate=2147483648
    ```
    Which means:
-   - Cloudflare's edge serves the asset fresh for **60 seconds** — subrequests during this window get `cf-cache-status: HIT` (~8ms).
-   - After 60 seconds, Cloudflare serves the stale copy immediately while revalidating in the background (`cf-cache-status: REVALIDATED`). The caller still gets a fast response.
-   - The asset stays warm in cache for up to **1 hour** via `stale-while-revalidate`.
+   - Cloudflare's edge serves the asset fresh for **30 seconds** — subrequests during this window get `cf-cache-status: HIT` (~8ms).
+   - After 30 seconds, Cloudflare serves the stale copy immediately while revalidating in the background (`cf-cache-status: REVALIDATED`). The caller still gets a fast response.
+   - The asset stays warm in cache indefinitely via `stale-while-revalidate`.
    - `max-age=0` tells browsers and the Worker's own fetch cache not to cache client-side — all caching goes through the CDN layer.
 
 ### Why not just use `max-age`?
@@ -47,8 +47,8 @@ The Worker captures and renders these response headers from the upstream fetch:
 | Scenario | `cf-cache-status` | Latency |
 |---|---|---|
 | First request to an edge node | `MISS` | ~195ms |
-| Subsequent requests within 60s | `HIT` | ~8ms |
-| First request after 60s (SWR window) | `REVALIDATED` | ~8ms (stale served, background refresh) |
+| Subsequent requests within 30s | `HIT` | ~8ms |
+| First request after 30s (SWR window) | `REVALIDATED` | ~8ms (stale served, background refresh) |
 | Request after 1hr with no traffic | `EXPIRED` | ~195ms |
 
 ---
@@ -145,7 +145,7 @@ pnpm run upload:bootstrap-data
 This puts `data/bootstrap.json` into your R2 bucket with the correct `Cache-Control` header stored as object metadata:
 
 ```
-public, max-age=0, s-maxage=60, stale-while-revalidate=3600
+public, max-age=0, s-maxage=30, stale-while-revalidate=2147483648
 ```
 
 ---
@@ -178,32 +178,7 @@ Open it in a browser. You should see the bootstrap JSON body and response header
 
 ---
 
-### Step 9 — (Optional) Add a custom domain to the Worker
 
-To serve the Worker on your own domain instead of `*.workers.dev`:
-
-1. Go to **Cloudflare Dashboard → Workers & Pages → swr-shell-demo → Settings → Domains & Routes**.
-2. Click **Add** → **Custom Domain**.
-3. Enter a hostname on a zone in your account, e.g. `swr-shell.yourdomain.com`.
-4. Cloudflare provisions the route and TLS automatically.
-
----
-
-### Step 10 — (Optional) Enable observability
-
-`wrangler.jsonc` already configures 100% trace and log sampling:
-
-```jsonc
-"observability": {
-    "enabled": true,
-    "logs": { "enabled": true, "head_sampling_rate": 1 },
-    "traces": { "enabled": true, "head_sampling_rate": 1 }
-}
-```
-
-View traces at **Cloudflare Dashboard → Workers & Pages → swr-shell-demo → Observability**. You can see the `fetch /api/bootstrap` span duration for every request and verify that `HIT` responses are fast and `MISS`/`REVALIDATED` responses are the only slow ones.
-
----
 
 ## Local development
 
