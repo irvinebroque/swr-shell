@@ -17,17 +17,16 @@ Browser → Worker (swr-shell-demo) → Cloudflare CDN cache → R2 bucket
 3. The CDN serves the R2 object from cache and returns it in milliseconds. The Worker renders the response headers and body into an HTML debug page so you can observe cache behavior live.
 4. The R2 object is uploaded with:
    ```
-   Cache-Control: public, max-age=0, s-maxage=30, stale-while-revalidate=2147483648
+   Cache-Control: public, max-age=30, stale-while-revalidate=2592000
    ```
    Which means:
    - Cloudflare's edge serves the asset fresh for **30 seconds** — subrequests during this window get `cf-cache-status: HIT` (~8ms).
    - After 30 seconds, Cloudflare serves the stale copy immediately while revalidating in the background (`cf-cache-status: REVALIDATED`). The caller still gets a fast response.
-   - The asset stays warm in cache indefinitely via `stale-while-revalidate`.
-   - `max-age=0` tells browsers and the Worker's own fetch cache not to cache client-side — all caching goes through the CDN layer.
+   - The asset stays warm in cache for up to **30 days** via `stale-while-revalidate`.
 
 ### Why not just use `max-age`?
 
-Without SWR configured correctly, every Worker subrequest that misses the CDN cache pays the full R2 origin latency (~195ms). With `s-maxage=60, stale-while-revalidate=3600`, that cold read happens at most once per 60-second window, and background revalidation keeps the asset warm. Result: clients nearly always see sub-10ms cache hits.
+Without SWR configured correctly, every Worker subrequest that misses the CDN cache pays the full R2 origin latency (~195ms). With `max-age=30, stale-while-revalidate=2592000`, that cold read happens at most once per 30-second window, and background revalidation keeps the asset warm. Result: clients nearly always see sub-10ms cache hits.
 
 ### What the debug page shows
 
@@ -145,7 +144,7 @@ pnpm run upload:bootstrap-data
 This puts `data/bootstrap.json` into your R2 bucket with the correct `Cache-Control` header stored as object metadata:
 
 ```
-public, max-age=0, s-maxage=30, stale-while-revalidate=2147483648
+public, max-age=30, stale-while-revalidate=2592000
 ```
 
 ---
@@ -198,7 +197,7 @@ If you change `data/bootstrap.json`, re-upload it:
 pnpm run upload:bootstrap-data
 ```
 
-The existing CDN cache entry expires at most `s-maxage + stale-while-revalidate` = 3660 seconds (~1 hour) after the last request. To force an immediate purge, use **Cloudflare Dashboard → Caching → Purge Cache** or the [Cache Purge API](https://developers.cloudflare.com/cache/how-to/purge-cache/).
+The existing CDN cache entry expires at most `max-age + stale-while-revalidate` = ~30 days after the last request. To force an immediate purge, use **Cloudflare Dashboard → Caching → Purge Cache** or the [Cache Purge API](https://developers.cloudflare.com/cache/how-to/purge-cache/).
 
 ---
 

@@ -3,5 +3,5 @@
 	"revision": "r2-seed-v1",
 	"requestPath": "/",
 	"generatedAt": "2026-03-19T22:40:00.000Z",
-	"cacheControl": "public, max-age=0, s-maxage=30, stale-while-revalidate=2147483648"
+	"cacheControl": "public, max-age=30, stale-while-revalidate=2592000"
 }
