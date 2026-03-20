@@ -1,6 +1,8 @@
 # swr-shell
 
-A minimal demo of **stale-while-revalidate (SWR) caching** using Cloudflare Workers and R2. It shows how to serve a JSON asset from R2 through Cloudflare's CDN so that Worker subrequests always receive a fast cached response — with background revalidation instead of cold reads.
+A minimal demo of **stale-while-revalidate (SWR) caching** using [Cloudflare Workers](https://developers.cloudflare.com/workers/) and [R2](https://developers.cloudflare.com/r2/). It shows how to serve a JSON asset from R2 through Cloudflare's CDN so that Worker subrequests always receive a fast cached response — with background revalidation instead of cold reads.
+
+The shell-and-inject pattern used here applies to any SSR framework running on Workers: stream the HTML shell immediately, fetch bootstrap data in parallel, and inject it into the response via [`HTMLRewriter`](https://developers.cloudflare.com/workers/runtime-apis/html-rewriter/) — without blocking time-to-first-byte on a slow or cold origin.
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/irvinebroque/swr-shell)
 
@@ -13,21 +15,24 @@ Browser → Worker (swr-shell-demo) → Cloudflare CDN cache → R2 bucket
 ```
 
 1. A browser requests `swr-shell-demo.your-subdomain.workers.dev/`.
-2. The Worker makes a subrequest to a **bootstrap data URL** — an R2 object served behind Cloudflare's CDN on a custom domain.
-3. The CDN serves the R2 object from cache and returns it in milliseconds. The Worker renders the response headers and body into an HTML debug page so you can observe cache behavior live.
+2. The Worker **immediately starts streaming an HTML shell** to the browser — no waiting for data. At the same time, it kicks off a subrequest to a **bootstrap data URL**: an R2 object served behind Cloudflare's CDN on a custom domain.
+3. As the CDN returns the R2 object (from cache: milliseconds; from origin: ~195ms), [`HTMLRewriter`](https://developers.cloudflare.com/workers/runtime-apis/html-rewriter/) injects the response headers and body directly into the streaming response — so the browser receives a complete page without the Worker ever buffering the full HTML.
 4. The R2 object is uploaded with:
    ```
-   Cache-Control: public, max-age=0, s-maxage=60, stale-while-revalidate=3600
+   Cache-Control: public, max-age=30, stale-while-revalidate=2592000
    ```
    Which means:
-   - Cloudflare's edge serves the asset fresh for **60 seconds** — subrequests during this window get `cf-cache-status: HIT` (~8ms).
-   - After 60 seconds, Cloudflare serves the stale copy immediately while revalidating in the background (`cf-cache-status: REVALIDATED`). The caller still gets a fast response.
-   - The asset stays warm in cache for up to **1 hour** via `stale-while-revalidate`.
-   - `max-age=0` tells browsers and the Worker's own fetch cache not to cache client-side — all caching goes through the CDN layer.
+   - Cloudflare's edge serves the asset fresh for **30 seconds** — subrequests during this window get `cf-cache-status: HIT` (~8ms).
+   - After 30 seconds, Cloudflare serves the stale copy immediately while revalidating in the background (`cf-cache-status: REVALIDATED`). The caller still gets a fast response.
+   - The asset stays warm in cache for up to **30 days** via `stale-while-revalidate`.
+
+   See: [Cache-Control directives](https://developers.cloudflare.com/cache/concepts/cache-control/) · [Revalidation and stale-while-revalidate](https://developers.cloudflare.com/cache/concepts/revalidation/) · [Async stale-while-revalidate](https://developers.cloudflare.com/changelog/post/2026-02-26-async-stale-while-revalidate/)
 
 ### Why not just use `max-age`?
 
-Without SWR configured correctly, every Worker subrequest that misses the CDN cache pays the full R2 origin latency (~195ms). With `s-maxage=60, stale-while-revalidate=3600`, that cold read happens at most once per 60-second window, and background revalidation keeps the asset warm. Result: clients nearly always see sub-10ms cache hits.
+Without SWR configured correctly, every Worker subrequest that misses the CDN cache pays the full R2 origin latency (~195ms). With `max-age=30, stale-while-revalidate=2592000`, that cold read happens at most once per 30-second window, and background revalidation keeps the asset warm. Result: clients nearly always see sub-10ms cache hits.
+
+See: [How the cache works in Workers](https://developers.cloudflare.com/workers/reference/how-the-cache-works/)
 
 ### What the debug page shows
 
@@ -47,8 +52,8 @@ The Worker captures and renders these response headers from the upstream fetch:
 | Scenario | `cf-cache-status` | Latency |
 |---|---|---|
 | First request to an edge node | `MISS` | ~195ms |
-| Subsequent requests within 60s | `HIT` | ~8ms |
-| First request after 60s (SWR window) | `REVALIDATED` | ~8ms (stale served, background refresh) |
+| Subsequent requests within 30s | `HIT` | ~8ms |
+| First request after 30s (SWR window) | `REVALIDATED` | ~8ms (stale served, background refresh) |
 | Request after 1hr with no traffic | `EXPIRED` | ~195ms |
 
 ---
@@ -58,7 +63,7 @@ The Worker captures and renders these response headers from the upstream fetch:
 ```
 swr-shell/
 ├── src/
-│   └── index.ts             # Worker logic + HTML renderer
+│   └── index.ts             # Worker logic: fetch, HTMLRewriter streaming, HTML renderers
 ├── test/
 │   └── index.spec.ts        # Vitest unit tests
 ├── data/
@@ -145,7 +150,7 @@ pnpm run upload:bootstrap-data
 This puts `data/bootstrap.json` into your R2 bucket with the correct `Cache-Control` header stored as object metadata:
 
 ```
-public, max-age=0, s-maxage=60, stale-while-revalidate=3600
+public, max-age=30, stale-while-revalidate=2592000
 ```
 
 ---
@@ -178,32 +183,7 @@ Open it in a browser. You should see the bootstrap JSON body and response header
 
 ---
 
-### Step 9 — (Optional) Add a custom domain to the Worker
 
-To serve the Worker on your own domain instead of `*.workers.dev`:
-
-1. Go to **Cloudflare Dashboard → Workers & Pages → swr-shell-demo → Settings → Domains & Routes**.
-2. Click **Add** → **Custom Domain**.
-3. Enter a hostname on a zone in your account, e.g. `swr-shell.yourdomain.com`.
-4. Cloudflare provisions the route and TLS automatically.
-
----
-
-### Step 10 — (Optional) Enable observability
-
-`wrangler.jsonc` already configures 100% trace and log sampling:
-
-```jsonc
-"observability": {
-    "enabled": true,
-    "logs": { "enabled": true, "head_sampling_rate": 1 },
-    "traces": { "enabled": true, "head_sampling_rate": 1 }
-}
-```
-
-View traces at **Cloudflare Dashboard → Workers & Pages → swr-shell-demo → Observability**. You can see the `fetch /api/bootstrap` span duration for every request and verify that `HIT` responses are fast and `MISS`/`REVALIDATED` responses are the only slow ones.
-
----
 
 ## Local development
 
@@ -211,7 +191,7 @@ View traces at **Cloudflare Dashboard → Workers & Pages → swr-shell-demo →
 pnpm run dev
 ```
 
-This starts the Worker locally via Vite + `@cloudflare/vite-plugin`. Note that local dev bypasses the Cloudflare CDN, so `cf-cache-status` will not appear — you'll see raw R2 origin latency on every request.
+This starts the Worker locally via Vite + [`@cloudflare/vite-plugin`](https://developers.cloudflare.com/workers/vite-plugin/). Note that local dev bypasses the Cloudflare CDN, so `cf-cache-status` will not appear — you'll see raw origin latency on every request.
 
 ---
 
@@ -223,7 +203,7 @@ If you change `data/bootstrap.json`, re-upload it:
 pnpm run upload:bootstrap-data
 ```
 
-The existing CDN cache entry expires at most `s-maxage + stale-while-revalidate` = 3660 seconds (~1 hour) after the last request. To force an immediate purge, use **Cloudflare Dashboard → Caching → Purge Cache** or the [Cache Purge API](https://developers.cloudflare.com/cache/how-to/purge-cache/).
+The existing CDN cache entry expires at most `max-age + stale-while-revalidate` = ~30 days after the last request. To force an immediate purge, use **Cloudflare Dashboard → Caching → Purge Cache** or the [Cache Purge API](https://developers.cloudflare.com/cache/how-to/purge-cache/).
 
 ---
 

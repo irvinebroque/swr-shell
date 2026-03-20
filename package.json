@@ -7,7 +7,7 @@
 		"dev": "vite dev",
 		"build": "vite build",
 		"deploy": "pnpm run build && wrangler deploy",
-		"upload:bootstrap-data": "wrangler r2 object put bootstrap-data/api/bootstrap --remote -J eu --file data/bootstrap.json --content-type application/json --cache-control \"public, max-age=0, s-maxage=60, stale-while-revalidate=2147483648\"",
+		"upload:bootstrap-data": "wrangler r2 object put bootstrap-data/api/bootstrap --remote -J eu --file data/bootstrap.json --content-type application/json --cache-control \"public, max-age=30, stale-while-revalidate=2592000\"",
 		"test": "vitest --run",
 		"typecheck": "tsc --noEmit",
 		"cf-typegen": "wrangler types worker-configuration.d.ts --config wrangler.jsonc"
@@ -15,7 +15,6 @@
 	"devDependencies": {
 		"@cloudflare/vite-plugin": "^1.29.1",
 		"@cloudflare/vitest-pool-workers": "^0.12.4",
-		"@types/node": "^25.5.0",
 		"typescript": "^5.5.2",
 		"vite": "^8.0.1",
 		"vitest": "~3.2.0",

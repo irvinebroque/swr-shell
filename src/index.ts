@@ -1,11 +1,25 @@
 export default {
 	async fetch(request: Request, env: Env): Promise<Response> {
 		const rayId = request.headers.get('cf-ray') ?? 'unknown';
-		const result = await fetchBootstrap(env);
-		return new Response(renderHtml(result, rayId), {
-			status: 200,
+
+		// Start fetching bootstrap data immediately — do not await yet.
+		const bootstrapPromise = fetchBootstrap(env);
+
+		// Build the shell with a placeholder — no bootstrap data needed yet.
+		const shell = new Response(renderShell(rayId), {
 			headers: { 'content-type': 'text/html; charset=UTF-8' },
 		});
+
+		// Stream the shell to the browser. When HTMLRewriter reaches <body>,
+		// it awaits the bootstrap result and injects the content inline.
+		return new HTMLRewriter()
+			.on('body', {
+				async element(el) {
+					const result = await bootstrapPromise;
+					el.append(renderContent(result), { html: true });
+				},
+			})
+			.transform(shell);
 	},
 } satisfies ExportedHandler<Env>;
 
@@ -51,14 +65,7 @@ function h(s: string): string {
 		.replace(/"/g, '&quot;');
 }
 
-function renderHtml(result: BootstrapResult, rayId: string): string {
-	const content = result.ok
-		? `<h2>Headers</h2>
-<pre>${h(JSON.stringify(result.headers, null, 2))}</pre>
-<h2>Body</h2>
-<pre>${h(result.body)}</pre>`
-		: `<pre class="err">${h(result.error)}</pre>`;
-
+function renderShell(rayId: string): string {
 	return `<!doctype html>
 <html lang="en">
 <head>
@@ -76,7 +83,15 @@ function renderHtml(result: BootstrapResult, rayId: string): string {
 </head>
 <body>
 <p class="ray">Ray ID: <span>${h(rayId)}</span></p>
-${content}
 </body>
 </html>`;
+}
+
+function renderContent(result: BootstrapResult): string {
+	return result.ok
+		? `<h2>Headers</h2>
+<pre>${h(JSON.stringify(result.headers, null, 2))}</pre>
+<h2>Body</h2>
+<pre>${h(result.body)}</pre>`
+		: `<pre class="err">${h(result.error)}</pre>`;
 }
