@@ -1,8 +1,10 @@
 # swr-shell
 
-A minimal demo of **stale-while-revalidate (SWR) caching** using [Cloudflare Workers](https://developers.cloudflare.com/workers/) and [R2](https://developers.cloudflare.com/r2/). It shows how to serve a JSON asset from R2 through Cloudflare's CDN so that Worker subrequests always receive a fast cached response — with background revalidation instead of cold reads.
+https://swr-shell-demo.roundtrip.workers.dev/
 
-The shell-and-inject pattern used here applies to any SSR framework running on Workers: stream the HTML shell immediately, fetch bootstrap data in parallel, and inject it into the response via [`HTMLRewriter`](https://developers.cloudflare.com/workers/runtime-apis/html-rewriter/) — without blocking time-to-first-byte on a slow or cold origin.
+A minimal demo of **stale-while-revalidate (SWR) caching** using [Cloudflare Workers](https://developers.cloudflare.com/workers/). Shows how to ensure that reads are **always** hot. You should use this pattern for data that is on the critical path, where it is preferrable to serve stale data than to end up with a cold read.
+
+The shell-and-inject pattern used here applies to any SSR framework running on Workers: stream the HTML shell immediately, fetch bootstrap data in parallel, and inject it into the response via [`HTMLRewriter`](https://developers.cloudflare.com/workers/runtime-apis/html-rewriter/) — without blocking time-to-first-byte.
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/irvinebroque/swr-shell)
 
@@ -11,78 +13,17 @@ The shell-and-inject pattern used here applies to any SSR framework running on W
 ## How it works
 
 ```
-Browser → Worker (swr-shell-demo) → Cloudflare CDN cache → R2 bucket
+Browser → Worker (swr-shell-demo) -- fetch() subrequest → Cloudflare Tiered Cache → Origin
 ```
 
 1. A browser requests `swr-shell-demo.your-subdomain.workers.dev/`.
-2. The Worker **immediately starts streaming an HTML shell** to the browser — no waiting for data. At the same time, it kicks off a subrequest to a **bootstrap data URL**: an R2 object served behind Cloudflare's CDN on a custom domain.
-3. As the CDN returns the R2 object (from cache: milliseconds; from origin: ~195ms), [`HTMLRewriter`](https://developers.cloudflare.com/workers/runtime-apis/html-rewriter/) injects the response headers and body directly into the streaming response — so the browser receives a complete page without the Worker ever buffering the full HTML.
-4. The R2 object is uploaded with:
-   ```
-   Cache-Control: public, max-age=30, stale-while-revalidate=2592000
-   ```
-   Which means:
-   - Cloudflare's edge serves the asset fresh for **30 seconds** — subrequests during this window get `cf-cache-status: HIT` (~8ms).
-   - After 30 seconds, Cloudflare serves the stale copy immediately while revalidating in the background (`cf-cache-status: REVALIDATED`). The caller still gets a fast response.
-   - The asset stays warm in cache for up to **30 days** via `stale-while-revalidate`.
+2. The Worker **immediately starts streaming an HTML shell** to the browser — no waiting for data. At the same time, it kicks off a subrequest to a **bootstrap data URL**: this can be any origin server that is "Orange Clouded", sitting behind Cloudflare and Cloudflare's Tiered Cache.
+3. This `fetch()` subrequest goes **through** Cloudflare's Tiered Cache. The origin server responds with `Cache-Control` headers of its choosing, ex: `Cache-Control: public, max-age=30, stale-while-revalidate=2592000`
+4. Cloudflare respects the `stale-while-revalidate` directive — meaning that even if the `fetch()` subrequest from the Worker makes a request later, and the cached data is stale, the `fetch()` subrequest will **return stale data immediately** — and Cloudflare will asynchronously update the cache, so that subsequent requests receive a fresh response.
 
-   See: [Cache-Control directives](https://developers.cloudflare.com/cache/concepts/cache-control/) · [Revalidation and stale-while-revalidate](https://developers.cloudflare.com/cache/concepts/revalidation/) · [Async stale-while-revalidate](https://developers.cloudflare.com/changelog/post/2026-02-26-async-stale-while-revalidate/)
-
-### Why not just use `max-age`?
-
-Without SWR configured correctly, every Worker subrequest that misses the CDN cache pays the full R2 origin latency (~195ms). With `max-age=30, stale-while-revalidate=2592000`, that cold read happens at most once per 30-second window, and background revalidation keeps the asset warm. Result: clients nearly always see sub-10ms cache hits.
-
-See: [How the cache works in Workers](https://developers.cloudflare.com/workers/reference/how-the-cache-works/)
-
-### What the debug page shows
-
-The Worker captures and renders these response headers from the upstream fetch:
-
-| Header | What it tells you |
-|---|---|
-| `cf-cache-status` | `HIT`, `MISS`, `REVALIDATED`, or `EXPIRED` |
-| `age` | Seconds since the cached copy was last fetched from origin |
-| `cache-control` | The `Cache-Control` value stored on the R2 object |
-| `etag` | Entity tag for the object version |
-| `last-modified` | When the object was last written to R2 |
-| `x-origin-revision` | Custom header for tracking which version is in cache |
-
-### Cache behavior reference
-
-| Scenario | `cf-cache-status` | Latency |
-|---|---|---|
-| First request to an edge node | `MISS` | ~195ms |
-| Subsequent requests within 30s | `HIT` | ~8ms |
-| First request after 30s (SWR window) | `REVALIDATED` | ~8ms (stale served, background refresh) |
-| Request after 1hr with no traffic | `EXPIRED` | ~195ms |
-
----
-
-## Repository structure
-
-```
-swr-shell/
-├── src/
-│   └── index.ts             # Worker logic: fetch, HTMLRewriter streaming, HTML renderers
-├── test/
-│   └── index.spec.ts        # Vitest unit tests
-├── data/
-│   └── bootstrap.json       # The JSON payload uploaded to R2
-├── wrangler.jsonc            # Worker config (name, vars, observability)
-├── vite.config.mts           # Vite build config
-└── vitest.config.mts         # Vitest config
-```
-
----
+See: [Cache-Control directives](https://developers.cloudflare.com/cache/concepts/cache-control/) · [Revalidation and stale-while-revalidate](https://developers.cloudflare.com/cache/concepts/revalidation/) · [Async stale-while-revalidate](https://developers.cloudflare.com/changelog/post/2026-02-26-async-stale-while-revalidate/)
 
 ## Deploying to your own Cloudflare account
-
-### Prerequisites
-
-- A [Cloudflare account](https://dash.cloudflare.com/sign-up)
-- A domain added to Cloudflare (needed to serve the R2 bucket on a custom hostname — required for caching)
-- [Node.js](https://nodejs.org) ≥ 18 and [pnpm](https://pnpm.io) installed
-- Wrangler authenticated: `npx wrangler login`
 
 ---
 
@@ -98,11 +39,13 @@ pnpm install
 
 ### Step 2 — Create the R2 bucket
 
+**Note:** If you already have an origin server that can serve the data you need, with the proper `Cache-Control` headers, skip to Step 7.
+
 ```sh
 npx wrangler r2 bucket create bootstrap-data --jurisdiction eu
 ```
 
-You can use any jurisdiction — just update `BOOTSTRAP_ORIGIN_URL` in `wrangler.jsonc` to match your custom domain later.
+You can use any jurisdiction — I've chosen EU here to demonstrate the performance impact, when data is stored far away from the eyeball. =
 
 ---
 
@@ -183,8 +126,6 @@ Open it in a browser. You should see the bootstrap JSON body and response header
 
 ---
 
-
-
 ## Local development
 
 ```sh
@@ -201,18 +142,6 @@ If you change `data/bootstrap.json`, re-upload it:
 
 ```sh
 pnpm run upload:bootstrap-data
-```
-
-The existing CDN cache entry expires at most `max-age + stale-while-revalidate` = ~30 days after the last request. To force an immediate purge, use **Cloudflare Dashboard → Caching → Purge Cache** or the [Cache Purge API](https://developers.cloudflare.com/cache/how-to/purge-cache/).
-
----
-
-## Other commands
-
-```sh
-pnpm test          # run Vitest unit tests
-pnpm run typecheck # run tsc --noEmit
-pnpm run cf-typegen  # regenerate worker-configuration.d.ts from wrangler.jsonc
 ```
 
 ---
